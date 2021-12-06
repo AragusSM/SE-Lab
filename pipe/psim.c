@@ -539,6 +539,7 @@ static byte_t sim_step_pipe(word_t ccount)
  *******************************************************************/
 void do_fetch_stage()
 {
+    instr_valid = true;
     /* your implementation */
     d_regvala = REG_NONE;
     d_regvalb = REG_NONE;
@@ -546,6 +547,7 @@ void do_fetch_stage()
     //fetch_output = fetch_input;
     fetch_ptr read = fetch_output;
     decode_ptr write = decode_input;
+    //forwarding of program counters from mispredicted branch and return value.
     if(memory_output->takebranch && memory_output->icode == I_JMP){
         f_pc = memory_output->vale;
     }else if(writeback_output->icode == I_RET){
@@ -665,9 +667,18 @@ void do_fetch_stage()
     write->rb = d_regvalb;
     write->valc = valC;
     write->valp = imem_icode == I_CALL ? valC : f_pc;
-    write->status = STAT_AOK;
+    if(!instr_valid){
+        write->status = STAT_INS;
+    }else if (imem_error){
+        write->status = STAT_ADR;
+    }else if (write->icode == I_HALT){
+        write->status = STAT_HLT;
+    }else{
+        write->status = STAT_AOK;
+    }
+    
 
-    fetch_input->status = STAT_AOK;
+    fetch_input->status = write->status;
     fetch_input->predPC = write->valp;
 
     /* logging function, do not change this */
@@ -695,10 +706,15 @@ void do_decode_stage()
                 write->srca = REG_NONE;
 				write->deste = REG_NONE;
                 write->srcb = REG_NONE;
-                write->deste = REG_NONE;
+                write->destm = REG_NONE;
                 break;
 
-			case I_NOP: break;
+			case I_NOP: 
+                write->srca = REG_NONE;
+				write->deste = REG_NONE;
+                write->srcb = REG_NONE;
+                write->destm = REG_NONE;
+                break;
 
 			case I_RRMOVQ: // aka CMOVQ
 				write->srca = read->ra;
@@ -739,7 +755,7 @@ void do_decode_stage()
                 write->srca = REG_NONE;
 				write->deste = REG_NONE;
                 write->srcb = REG_NONE;
-                write->deste = REG_NONE;
+                write->destm = REG_NONE;
                 break;
 
 			case I_CALL:
@@ -775,34 +791,36 @@ void do_decode_stage()
 				break;
 		}
 
+        //forwarding from execute, memory, and write back for vala
         if(memory_input->deste == write->srca){
             write->vala = memory_input->vale;
-        }else if (writeback_input->deste == write->srca){
-            write->vala = writeback_input->vale;
         }else if (writeback_input->destm == write->srca){
             write->vala = writeback_input->valm;
-        }else if (wb_destE == write->srca){
-            write->vala = wb_valE;
+        }else if (writeback_input->deste == write->srca){
+            write->vala = writeback_input->vale;
         }else if (wb_destM == write->srca){
             write->vala = wb_valM;
+        }else if (wb_destE == write->srca){
+            write->vala = wb_valE;
         }else{
             write->vala = get_reg_val(reg, write->srca);
         }
 
+        //same for valb, but with extra conditions for procedural call and return
         if(memory_input->deste == write->srcb || (memory_input->deste == REG_RSP && (read->icode == I_CALL || read->icode == I_RET))){
             write->valb = memory_input->vale;
-        }else if (writeback_input->deste == write->srcb || (writeback_input->deste == REG_RSP && (read->icode == I_CALL || read->icode == I_RET))){
-            write->valb = writeback_input->vale;
         }else if (writeback_input->destm == write->srcb || (writeback_input->destm == REG_RSP && (read->icode == I_CALL || read->icode == I_RET))){
             write->valb = writeback_input->valm;
-        }else if (wb_destE == write->srcb|| (wb_destE == REG_RSP && (read->icode == I_CALL || read->icode == I_RET))){
-            write->valb = wb_valE;
+        }else if (writeback_input->deste == write->srcb || (writeback_input->deste == REG_RSP && (read->icode == I_CALL || read->icode == I_RET))){
+            write->valb = writeback_input->vale;
         }else if (wb_destM == write->srcb || (wb_destM == REG_RSP && (read->icode == I_CALL || read->icode == I_RET))){
             write->valb = wb_valM;
+        }else if (wb_destE == write->srcb|| (wb_destE == REG_RSP && (read->icode == I_CALL || read->icode == I_RET))){
+            write->valb = wb_valE;
         }else{
             write->valb = get_reg_val(reg, write->srcb); 
         }
-        write->status = STAT_AOK;
+        write->status = read->status;
         write->stage_pc = read->stage_pc;
         write->icode = read->icode;
         write->ifun = read->ifun;
@@ -858,8 +876,20 @@ void do_execute_stage()
 
 			case I_ALU:
 				write->vale = compute_alu(read->ifun, read->vala, read->valb);
+                alufun = read->ifun;
 				cc_in = compute_cc(read->ifun, read->vala, read->valb);
-                setcc = true;
+                if (read->status == STAT_AOK)
+                {
+                    if(!dmem_error && status == STAT_AOK){
+                        setcc = true;
+                    }else{
+                        setcc = false;
+                    }
+                    
+                }else{
+                    setcc = false;
+                }
+                
 				break;
 
 			case I_JMP:
@@ -893,7 +923,7 @@ void do_execute_stage()
     write->ifun = read->ifun;
     write->srca = read->srca;
     write->stage_pc = read->stage_pc;
-    write->status = STAT_AOK;
+    write->status = read->status;
     write->takebranch = e_bcond;
     write->vala = read->vala;
 
@@ -974,7 +1004,7 @@ void do_memory_stage()
 
 			case I_POPQ:
 				mem_read = true;
-                mem_addr = read->vale;
+                mem_addr = read->vale - 8;
 				break;
 
 			default:
@@ -991,7 +1021,7 @@ void do_memory_stage()
         }
     }
 
-    if (mem_write) {
+    if (mem_write && read->status == STAT_AOK) {
         if ((dmem_error |= !set_word_val(mem, mem_addr, mem_data))) {
             sim_log("\tMemory: Couldn't write to address 0x%llx\n", mem_addr);
         } else {
@@ -1004,7 +1034,14 @@ void do_memory_stage()
     write->icode = read->icode;
     write->ifun = read->ifun;
     write->stage_pc = read->stage_pc;
-    write->status = read->status;
+    if(read->status != STAT_AOK){
+        write->status = read->status;
+    }else if (dmem_error){
+        write->status = STAT_ADR;
+    }else{
+        write->status = read->status;
+    }
+    
     write->vale = read->vale;
     write->valm = mem_data;
 }
@@ -1035,7 +1072,7 @@ void do_writeback_stage()
     wb_valE = read->vale;
     wb_valM = read->valm;
 
-    status = read->icode == I_HALT ? STAT_HLT : read->status;
+    status = read->status;
     if (wb_destE != REG_NONE &&  writeback_output -> status == STAT_AOK) {
 	    sim_log("\tWriteback: Wrote 0x%llx to register %s\n",
 		    wb_valE, reg_name(wb_destE));
@@ -1073,7 +1110,38 @@ p_stat_t pipe_cntl(char *name, word_t stall, word_t bubble)
  * make sure you have a working PIPE before implementing this
  *******************************************************************/
 void do_stall_check()
-{
+{   
+    if(decode_input->icode == I_HALT){
+        fetch_state->op     = pipe_cntl("PC", false, true);
+        decode_state->op    = pipe_cntl("ID", false, false);
+        execute_state->op   = pipe_cntl("EX", false, false);
+        memory_state->op    = pipe_cntl("MEM", false, false);
+        writeback_state->op = pipe_cntl("WB", false, false);
+    }
+    if(execute_input->icode == I_HALT){
+        fetch_state->op     = pipe_cntl("PC", false, true);
+        decode_state->op    = pipe_cntl("ID", false, true);
+        execute_state->op   = pipe_cntl("EX", false, false);
+        memory_state->op    = pipe_cntl("MEM", false, false);
+        writeback_state->op = pipe_cntl("WB", false, false);
+    }
+    if(memory_input->icode == I_HALT){
+        fetch_state->op     = pipe_cntl("PC", false, true);
+        decode_state->op    = pipe_cntl("ID", false, true);
+        execute_state->op   = pipe_cntl("EX", false, true);
+        memory_state->op    = pipe_cntl("MEM", false, false);
+        writeback_state->op = pipe_cntl("WB", false, false);
+    }
+    if(writeback_input->icode == I_HALT){
+        fetch_state->op     = pipe_cntl("PC", false, true);
+        decode_state->op    = pipe_cntl("ID", false, true);
+        execute_state->op   = pipe_cntl("EX", false, true);
+        memory_state->op    = pipe_cntl("MEM", false, true);
+        writeback_state->op = pipe_cntl("WB", false, false);
+    }
+    
+    bool mispredict = (memory_input->icode == I_JMP && e_bcond);
+    //currently checks for load use and return hazards and updates the pipeline as appropriate
     bool load_use = (memory_input->icode == I_MRMOVQ || memory_input->icode == I_POPQ) &&  
         (memory_input->destm == execute_input->srca || memory_input->destm == execute_input->srcb);
     bool ret = execute_input->icode == I_RET || memory_input->icode == I_RET || writeback_input->icode == I_RET;
@@ -1081,6 +1149,12 @@ void do_stall_check()
     if(load_use && ret){
         fetch_state->op     = pipe_cntl("PC", true, false);
         decode_state->op    = pipe_cntl("ID", true, false);
+        execute_state->op   = pipe_cntl("EX", false, true);
+        memory_state->op    = pipe_cntl("MEM", false, false);
+        writeback_state->op = pipe_cntl("WB", false, false);
+    }else if (mispredict && ret){
+        fetch_state->op     = pipe_cntl("PC", true, false);
+        decode_state->op    = pipe_cntl("ID", false, true);
         execute_state->op   = pipe_cntl("EX", false, true);
         memory_state->op    = pipe_cntl("MEM", false, false);
         writeback_state->op = pipe_cntl("WB", false, false);
@@ -1093,6 +1167,13 @@ void do_stall_check()
         execute_state->op   = pipe_cntl("EX", false, true);
         memory_state->op    = pipe_cntl("MEM", false, false);
         writeback_state->op = pipe_cntl("WB", false, false);
+
+    }else if (mispredict){
+        fetch_state->op     = pipe_cntl("PC", false, false);
+        decode_state->op    = pipe_cntl("ID", false, true);
+        execute_state->op   = pipe_cntl("EX", false, true);
+        memory_state->op    = pipe_cntl("MEM", false, false);
+        writeback_state->op = pipe_cntl("WB", false, false);
     }else if(ret){
         fetch_state->op     = pipe_cntl("PC", true, false);
         decode_state->op    = pipe_cntl("ID", false, true);
@@ -1100,6 +1181,10 @@ void do_stall_check()
         memory_state->op    = pipe_cntl("MEM", false, false);
         writeback_state->op = pipe_cntl("WB", false, false);
     }else{
+        if(decode_input->icode == I_HALT || execute_input->icode == I_HALT || memory_input->icode == I_HALT
+        || writeback_input->icode == I_HALT){
+            return;
+        }
         fetch_state->op     = pipe_cntl("PC", false, false);
         decode_state->op    = pipe_cntl("ID", false, false);
         execute_state->op   = pipe_cntl("EX", false, false);
