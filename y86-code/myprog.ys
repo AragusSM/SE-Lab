@@ -1,2 +1,19 @@
 # Design your own testcase here
-halt
+# Design your own testcase here
+// combining load-use and branch cancellation
+
+    xorq %rax,%rax 
+    jne  target        # Not taken
+    irmovq $1, %rax    # Fall through
+    irmovq $125,%rdx
+    irmovq  $10,%rcx
+    rmmovq %rcx, 0(%rdx)
+    irmovq  $10,%rbx
+    mrmovq 0(%rdx), %rax  # Load %rax
+    addq %rbx,%rax        # Use %rax
+    halt
+target:
+    irmovq $2, %rdx    # Target
+    irmovq $3, %rbx    # Target+1
+    halt
+

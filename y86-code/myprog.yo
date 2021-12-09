@@ -1,2 +1,19 @@
                             | # Design your own testcase here
-0x000: 00                   | halt
+                            | # Design your own testcase here
+                            | // combining load-use and branch cancellation
+                            | 
+0x000: 6300                 |     xorq %rax,%rax 
+0x002: 744a00000000000000   |     jne  target        # Not taken
+0x00b: 30f00100000000000000 |     irmovq $1, %rax    # Fall through
+0x015: 30f27d00000000000000 |     irmovq $125,%rdx
+0x01f: 30f10a00000000000000 |     irmovq  $10,%rcx
+0x029: 40120000000000000000 |     rmmovq %rcx, 0(%rdx)
+0x033: 30f30a00000000000000 |     irmovq  $10,%rbx
+0x03d: 50020000000000000000 |     mrmovq 0(%rdx), %rax  # Load %rax
+0x047: 6030                 |     addq %rbx,%rax        # Use %rax
+0x049: 00                   |     halt
+0x04a:                      | target:
+0x04a: 30f20200000000000000 |     irmovq $2, %rdx    # Target
+0x054: 30f30300000000000000 |     irmovq $3, %rbx    # Target+1
+0x05e: 00                   |     halt
+                            | 

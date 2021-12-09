@@ -654,6 +654,30 @@ void do_fetch_stage()
 				f_pc = f_pc + 2;
 				break;
 
+            case HPACK(I_LEAQ, F_NONE):
+				imem_error |= !get_byte_val(mem, f_pc + 1, &regVals);
+				d_regvala = HI4(regVals);
+				d_regvalb = LO4(regVals);
+                imem_error |= !get_word_val(mem, f_pc + 2, &valC);
+				f_pc = f_pc + 10;
+				break;
+
+            case HPACK(I_VECADD, F_NONE):
+				imem_error |= !get_byte_val(mem, f_pc + 1, &regVals);
+				d_regvala = HI4(regVals);
+				d_regvalb = LO4(regVals);
+				f_pc = f_pc + 2;
+				break;
+
+            case HPACK(I_SHF, S_HL):
+            case HPACK(I_SHF, S_HR):
+            case HPACK(I_SHF, S_AR):
+				imem_error |= !get_byte_val(mem, f_pc + 1, &regVals);
+				d_regvala = HI4(regVals);
+				d_regvalb = LO4(regVals);
+				f_pc = f_pc + 2;
+				break;
+
 			default:
 				instr_valid = false;
 				printf("Invalid instruction\n");
@@ -786,6 +810,27 @@ void do_decode_stage()
 				write->destm = read->ra;
 				break;
 
+            case I_LEAQ:
+                write->srca = REG_NONE;
+				write->srcb = read->rb;
+                write->destm = REG_NONE;
+				write->deste = read->ra;
+				break;
+
+            case I_VECADD:
+                write->srca = read->ra;
+				write->srcb = read->rb;
+                write->destm = REG_NONE;
+				write->deste = read->rb;
+				break;
+
+            case I_SHF:
+                write->srca = read->ra;
+				write->srcb = read->rb;
+                write->destm = REG_NONE;
+				write->deste = read->rb;
+				break;
+
 			default:
 				printf("icode is not valid (%d)", read->icode);
 				break;
@@ -844,6 +889,8 @@ void do_execute_stage()
     word_t alua, alub;
     alua = alub = 0;
     /* your implementation */
+    int vecsum = 0;
+    int shiftresult = 0;
     //execute_output = execute_input;
     execute_ptr read = execute_output;
     memory_ptr write = memory_input;
@@ -911,6 +958,36 @@ void do_execute_stage()
 
 			case I_POPQ:
 				write->vale = read->valb + 8;
+				break;
+
+            case I_LEAQ:
+				write->vale = read->valb + read->valc;
+				break;
+
+            case I_VECADD:
+                vecsum = (read->vala & 0x7F7F7F7F7F7F7F7F) + (read->valb & 0x7F7F7F7F7F7F7F7F);               
+				write->vale = ((read->vala^read->valb) & 0x8080808080808080) ^ vecsum;         
+				break;
+
+            case I_SHF:
+                switch (read->ifun)
+                {
+                case S_HL:
+                    shiftresult = read->valb << read->vala;
+                    break;
+                
+                case S_HR:
+                    shiftresult = (unsigned int) read->valb >> read->vala;
+                    break;
+
+                case S_AR:
+                    shiftresult = (signed int) read->valb << read->vala;
+                    break;
+
+                default:
+                    break;
+                }               
+				write->vale = shiftresult;         
 				break;
 
 			default:
@@ -1006,6 +1083,12 @@ void do_memory_stage()
 				mem_read = true;
                 mem_addr = read->vale - 8;
 				break;
+            
+            case I_LEAQ: break;
+
+            case I_VECADD: break;
+
+            case I_SHF: break;
 
 			default:
 				printf("icode is not valid (%d)", read->icode);
